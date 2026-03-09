@@ -278,7 +278,7 @@ function generateNoise(type, bufferSize, sampleRate) {
   const output = new Float32Array(bufferSize);
   if (type === 'white') {
     for (let i = 0; i < bufferSize; i++) {
-      output[i] = Math.random() * 2 - 1;
+      output[i] = (Math.random() * 2 - 1) * 0.55;
     }
   } else if (type === 'pink') {
     let b0=0,b1=0,b2=0,b3=0,b4=0,b5=0,b6=0;
@@ -298,7 +298,7 @@ function generateNoise(type, bufferSize, sampleRate) {
     for (let i = 0; i < bufferSize; i++) {
       const w = Math.random() * 2 - 1;
       last = (last + 0.02 * w) / 1.02;
-      output[i] = last * 3.5;
+      output[i] = last * 4.5;
     }
   }
   return output;
@@ -400,7 +400,9 @@ function handleMessage(msg) {
     if (ctx.state === 'suspended') ctx.resume();
     isPlaying = true;
     chainA = buildChain(currentType);
-    chainA.masterGain.gain.setTargetAtTime(0.7, ctx.currentTime, 0.7);
+    // Hold at 0 for 50ms to let the source stabilize, then fade in
+    chainA.masterGain.gain.setValueAtTime(0, ctx.currentTime);
+    chainA.masterGain.gain.setTargetAtTime(0.7, ctx.currentTime + 0.05, 0.7);
     activeChain = 'A';
   }
 
@@ -597,6 +599,7 @@ export default function App() {
   const updatePlaying = (next: boolean) => {
     playingRef.current = next;
     setIsPlaying(next);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
     // Silent track keeps iOS audio session alive in background
     if (silentSound.current) {
@@ -709,7 +712,7 @@ export default function App() {
         if (Math.abs(gs.dy) > 10 || Math.abs(gs.dx) > 10) {
           isDragging.current = true;
         }
-        if (!playingRef.current || !isDragging.current) return;
+        if (!isDragging.current) return;
 
         const dyNorm = -gs.dy / (SCREEN_H * 0.6);
         const newFilter = Math.max(0, Math.min(1, startFilter.current + dyNorm));
