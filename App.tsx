@@ -9,8 +9,12 @@ import {
   PanResponder,
   Animated,
   Easing,
+  AppState,
 } from "react-native";
 import { WebView } from "react-native-webview";
+import { Audio } from "expo-av";
+import * as Haptics from "expo-haptics";
+import { Accelerometer } from "expo-sensors";
 import Svg, { Defs, RadialGradient, Stop, Circle } from "react-native-svg";
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get("window");
@@ -94,18 +98,6 @@ const TUTORIAL_TEXT_COLORS: Record<NoiseType, string> = {
   brown: "rgba(60,40,5,0.5)",
 };
 
-const VIGNETTE_COLORS: Record<NoiseType, string> = {
-  white: "130,130,145",
-  pink:  "160,80,110",
-  brown: "60,42,5",
-};
-
-const makeVignetteHtml = (color: string) => `
-<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
-<style>*{margin:0;padding:0}html,body{width:100%;height:100%;overflow:hidden;background:transparent!important;background-color:transparent!important}
-div{position:fixed;top:0;left:0;right:0;bottom:0;border-radius:44px;
-box-shadow:inset 0 0 60px 15px rgba(${color},0.45),inset 0 0 120px 35px rgba(${color},0.15);
-}</style></head><body><div></div></body></html>`;
 
 // Two orb+text layers (A/B) for crossfading between steps.
 // Text stays visible throughout a step; only the orb pulses in/out.
@@ -392,6 +384,15 @@ function getActiveChain() {
 function handleMessage(msg) {
   const data = JSON.parse(msg);
 
+  if (data.action === 'warmup') {
+    if (!ctx) {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (ctx.state === 'suspended') ctx.resume();
+    // Pre-generate reverb impulse so first play is instant
+    getReverbBuffer();
+  }
+
   if (data.action === 'play') {
     if (!ctx) {
       ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -469,6 +470,9 @@ export default function App() {
   const [tutorialStep, setTutorialStep] = useState<TutorialStep>("done");
   const [tutorialVisible, setTutorialVisible] = useState(false);
 
+  // Silent audio track to keep audio session alive in background
+  const silentSound = useRef<Audio.Sound | null>(null);
+
   // Background
   const bgG = useRef(new Animated.Value(NOISE_COLORS.white[1])).current;
   const bgAnimRef = useRef<Animated.CompositeAnimation | null>(null);
@@ -476,8 +480,6 @@ export default function App() {
   // Tutorial overlay fade
   const tutorialOverlay = useRef(new Animated.Value(1)).current;
 
-  // Vignette (visible when paused)
-  const vignetteOpacity = useRef(new Animated.Value(1)).current;
 
   // Refs
   const filterRef = useRef(1.0);
@@ -489,6 +491,7 @@ export default function App() {
   const startReverb = useRef(0.0);
   const singleTapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tutorialStepRef = useRef<TutorialStep>("done");
+  const warmedUp = useRef(false);
 
   // Show tutorial only on first launch
   useEffect(() => {
@@ -500,6 +503,59 @@ export default function App() {
       }
     });
   }, []);
+
+  // Audio session + preload silent track + restore saved state
+  useEffect(() => {
+    Audio.setAudioModeAsync({
+      playsInSilentModeIOS: true,
+      staysActiveInBackground: true,
+    });
+
+    // Preload silent keepalive track
+    Audio.Sound.createAsync(
+      require("./assets/silence.wav"),
+      { isLooping: true, volume: 0 }
+    ).then(({ sound }) => {
+      silentSound.current = sound;
+    });
+
+    // Restore last session's settings
+    AsyncStorage.multiGet(["noiseType", "filterVal", "reverbVal"]).then((entries) => {
+      const saved = Object.fromEntries(entries);
+      if (saved.noiseType) {
+        const nt = saved.noiseType as NoiseType;
+        setNoiseType(nt);
+        noiseTypeRef.current = nt;
+        bgG.setValue(NOISE_COLORS[nt][1]);
+      }
+      if (saved.filterVal) {
+        const f = parseFloat(saved.filterVal);
+        setFilterVal(f);
+        filterRef.current = f;
+      }
+      if (saved.reverbVal) {
+        const r = parseFloat(saved.reverbVal);
+        setReverbVal(r);
+        reverbRef.current = r;
+      }
+    });
+  }, []);
+
+  // Save state when app goes to background
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "background" || state === "inactive") {
+        AsyncStorage.multiSet([
+          ["noiseType", noiseTypeRef.current],
+          ["filterVal", filterRef.current.toString()],
+          ["reverbVal", reverbRef.current.toString()],
+        ]);
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  const lastShake = useRef(0);
 
   const { orbA, orbB, textAOpacity, textBOpacity, stepA, stepB } = useTutorialAnimations(tutorialStep);
 
@@ -541,12 +597,15 @@ export default function App() {
   const updatePlaying = (next: boolean) => {
     playingRef.current = next;
     setIsPlaying(next);
-    Animated.timing(vignetteOpacity, {
-      toValue: next ? 0 : 1,
-      duration: next ? 2000 : 800,
-      easing: Easing.out(Easing.ease),
-      useNativeDriver: true,
-    }).start();
+
+    // Silent track keeps iOS audio session alive in background
+    if (silentSound.current) {
+      if (next) {
+        silentSound.current.playAsync();
+      } else {
+        silentSound.current.stopAsync();
+      }
+    }
   };
 
   const animateBgTo = (type: NoiseType) => {
@@ -566,7 +625,38 @@ export default function App() {
     setNoiseType(next);
     animateBgTo(next);
     send({ action: "crossfade", type: next });
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
+
+  // Shake to randomize
+  useEffect(() => {
+    Accelerometer.setUpdateInterval(150);
+    const sub = Accelerometer.addListener(({ x, y, z }) => {
+      const mag = Math.sqrt(x * x + y * y + z * z);
+      const now = Date.now();
+      if (mag > 2.5 && now - lastShake.current > 1500) {
+        lastShake.current = now;
+        const others = NOISE_ORDER.filter((t) => t !== noiseTypeRef.current);
+        const randType = others[Math.floor(Math.random() * others.length)];
+        const randFilter = 0.2 + Math.random() * 0.8;
+        const randReverb = Math.random() * 0.8;
+
+        crossfadeToNoise(randType);
+        updateFilter(randFilter);
+        updateReverb(randReverb);
+        send({ action: "filter", value: randFilter });
+        send({ action: "reverb", value: randReverb });
+
+        if (!playingRef.current) {
+          updatePlaying(true);
+          send({ action: "play" });
+        }
+
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    });
+    return () => sub.remove();
+  }, []);
 
   const handleTap = () => {
     if (singleTapTimer.current) {
@@ -585,6 +675,14 @@ export default function App() {
         const next = !playingRef.current;
         updatePlaying(next);
         send({ action: next ? "play" : "stop" });
+        if (next) {
+          // Sync restored state to the new audio chain
+          if (noiseTypeRef.current !== "white") {
+            send({ action: "crossfade", type: noiseTypeRef.current });
+          }
+          send({ action: "filter", value: filterRef.current });
+          send({ action: "reverb", value: reverbRef.current });
+        }
         if (tutorialStepRef.current === "tap" && next) {
           advanceTutorial("tap");
         }
@@ -601,6 +699,11 @@ export default function App() {
         isDragging.current = false;
         startFilter.current = filterRef.current;
         startReverb.current = reverbRef.current;
+        // Warm up audio context on first touch so play is instant
+        if (!warmedUp.current) {
+          warmedUp.current = true;
+          webRef.current?.postMessage(JSON.stringify({ action: "warmup" }));
+        }
       },
       onPanResponderMove: (_, gs) => {
         if (Math.abs(gs.dy) > 10 || Math.abs(gs.dx) > 10) {
@@ -661,21 +764,6 @@ export default function App() {
         style={[styles.bgLayer, { backgroundColor: "#000", opacity: overlayOpacity }]}
         pointerEvents="none"
       />
-
-      {/* Vignette (visible when paused) — CSS inset shadow */}
-      <Animated.View
-        style={[styles.bgLayer, { opacity: vignetteOpacity }]}
-        pointerEvents="none"
-      >
-        <WebView
-          source={{ html: makeVignetteHtml(VIGNETTE_COLORS[noiseType]) }}
-          style={[StyleSheet.absoluteFill, { backgroundColor: "transparent" }]}
-          scrollEnabled={false}
-          pointerEvents="none"
-          transparent={true}
-          androidLayerType="hardware"
-        />
-      </Animated.View>
 
       {/* Audio engine */}
       <WebView
