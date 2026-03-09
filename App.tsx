@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { StatusBar } from "expo-status-bar";
 import {
   StyleSheet,
@@ -465,8 +466,8 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [filterVal, setFilterVal] = useState(1.0);
   const [reverbVal, setReverbVal] = useState(0.0);
-  const [tutorialStep, setTutorialStep] = useState<TutorialStep>("tap");
-  const [tutorialVisible, setTutorialVisible] = useState(true);
+  const [tutorialStep, setTutorialStep] = useState<TutorialStep>("done");
+  const [tutorialVisible, setTutorialVisible] = useState(false);
 
   // Background
   const bgG = useRef(new Animated.Value(NOISE_COLORS.white[1])).current;
@@ -487,7 +488,18 @@ export default function App() {
   const startFilter = useRef(1.0);
   const startReverb = useRef(0.0);
   const singleTapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const tutorialStepRef = useRef<TutorialStep>("tap");
+  const tutorialStepRef = useRef<TutorialStep>("done");
+
+  // Show tutorial only on first launch
+  useEffect(() => {
+    AsyncStorage.getItem("tutorialDone").then((val) => {
+      if (!val) {
+        tutorialStepRef.current = "tap";
+        setTutorialStep("tap");
+        setTutorialVisible(true);
+      }
+    });
+  }, []);
 
   const { orbA, orbB, textAOpacity, textBOpacity, stepA, stepB } = useTutorialAnimations(tutorialStep);
 
@@ -517,7 +529,10 @@ export default function App() {
           duration: 3500,
           easing: Easing.out(Easing.ease),
           useNativeDriver: true,
-        }).start(() => setTutorialVisible(false));
+        }).start(() => {
+          setTutorialVisible(false);
+          AsyncStorage.setItem("tutorialDone", "1");
+        });
       }
       setTutorialStep(next);
     }
