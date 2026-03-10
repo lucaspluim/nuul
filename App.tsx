@@ -43,77 +43,129 @@ body{background:rgb(245,245,245);transition:background 1.5s ease}
   position:fixed;
   border-radius:50%;
   filter:blur(90px);
-  opacity:0.7;
+  opacity:0.9;
   transition:background 1.5s ease;
   will-change:transform;
 }
-.b1{width:90vw;height:90vw;top:-20%;left:-25%;animation:drift1 14s ease-in-out infinite}
-.b2{width:80vw;height:80vw;bottom:-15%;right:-20%;animation:drift2 18s ease-in-out infinite}
-.b3{width:70vw;height:70vw;top:30%;left:40%;animation:drift3 16s ease-in-out infinite}
-.b4{width:60vw;height:60vw;top:10%;right:10%;animation:drift4 20s ease-in-out infinite}
-.paused .blob{animation-play-state:paused}
-@keyframes drift1{
-  0%,100%{transform:translate(0,0) scale(1)}
-  33%{transform:translate(30vw,30vh) scale(1.2)}
-  66%{transform:translate(-10vw,50vh) scale(0.9)}
-}
-@keyframes drift2{
-  0%,100%{transform:translate(0,0) scale(1)}
-  33%{transform:translate(-35vw,-25vh) scale(1.15)}
-  66%{transform:translate(20vw,-40vh) scale(1.1)}
-}
-@keyframes drift3{
-  0%,100%{transform:translate(0,0) scale(1)}
-  33%{transform:translate(-30vw,20vh) scale(1.2)}
-  66%{transform:translate(25vw,-30vh) scale(0.85)}
-}
-@keyframes drift4{
-  0%,100%{transform:translate(0,0) scale(1)}
-  33%{transform:translate(20vw,35vh) scale(0.9)}
-  66%{transform:translate(-30vw,-20vh) scale(1.15)}
-}
 </style></head><body>
-<div class="blob b1"></div>
-<div class="blob b2"></div>
-<div class="blob b3"></div>
-<div class="blob b4"></div>
 <script>
 var palettes = {
   white: {
     bg: 'rgb(242,242,242)',
-    blobs: ['rgb(175,175,180)','rgb(190,190,195)','rgb(165,165,172)','rgb(185,185,190)']
+    blobs: ['rgb(200,200,208)','rgb(210,210,216)','rgb(195,195,205)','rgb(208,208,214)']
   },
   pink: {
     bg: 'rgb(240,195,208)',
-    blobs: ['rgb(220,140,170)','rgb(250,160,190)','rgb(200,130,165)','rgb(235,170,200)']
+    blobs: ['rgb(228,160,182)','rgb(248,175,198)','rgb(218,152,178)','rgb(238,172,195)']
   },
   brown: {
     bg: 'rgb(135,100,18)',
-    blobs: ['rgb(180,135,30)','rgb(100,70,8)','rgb(190,145,40)','rgb(85,60,5)']
+    blobs: ['rgb(165,125,30)','rgb(160,120,28)','rgb(170,130,35)','rgb(158,118,26)']
   }
 };
-var blobs = document.querySelectorAll('.blob');
-function setNoise(type) {
-  var p = palettes[type];
-  document.body.style.background = p.bg;
-  for (var i = 0; i < blobs.length; i++) {
-    blobs[i].style.background = p.blobs[i];
-  }
-}
-function setPlaying(playing) {
-  if (playing) {
-    document.body.classList.remove('paused');
+var currentPalette = 'white';
+var isPlaying = false;
+var W = window.innerWidth, H = window.innerHeight;
+window.addEventListener('resize', function() { W = window.innerWidth; H = window.innerHeight; });
+
+function rand(a, b) { return a + Math.random() * (b - a); }
+
+// Dynamic blob pool
+var BLOB_COUNT = 6;
+var blobList = [];
+
+function resetBlob(b, edge) {
+  var size = rand(50, 95);
+  var sizePx = size * W / 100;
+  var x, y;
+  if (edge === 'top') {
+    x = rand(-sizePx * 0.3, W); y = -sizePx;
+  } else if (edge === 'bottom') {
+    x = rand(-sizePx * 0.3, W); y = H + sizePx * 0.3;
+  } else if (edge === 'left') {
+    x = -sizePx; y = rand(-sizePx * 0.3, H);
+  } else if (edge === 'right') {
+    x = W + sizePx * 0.3; y = rand(-sizePx * 0.3, H);
   } else {
-    document.body.classList.add('paused');
+    x = rand(-sizePx * 0.3, W); y = rand(-sizePx * 0.3, H);
+  }
+  b.x = x; b.y = y; b.size = sizePx;
+  b.ci = Math.floor(rand(0, 4));
+  b.speed = rand(0.6, 1.4);
+  b.dx = rand(-0.3, 0.3); b.dy = rand(-0.3, 0.3);
+  b.s = rand(0.85, 1.15);
+  b.fade = 0;
+  b.el.style.width = size + 'vw';
+  b.el.style.height = size + 'vw';
+  b.el.style.background = palettes[currentPalette].blobs[b.ci];
+}
+
+function makeBlob(edge) {
+  var el = document.createElement('div');
+  el.className = 'blob';
+  document.body.appendChild(el);
+  var b = { el: el, x:0, y:0, size:0, ci:0, speed:1, dx:0, dy:0, s:1, fade:0 };
+  resetBlob(b, edge);
+  if (edge === 'random') b.fade = 1;
+  blobList.push(b);
+}
+
+for (var i = 0; i < BLOB_COUNT; i++) makeBlob('random');
+
+// Gravity from RN accelerometer
+var gx = 0, gy = 0, smoothX = 0, smoothY = 0;
+
+function spawnEdge() {
+  var ax = Math.abs(smoothX), ay = Math.abs(smoothY);
+  if (ax < 0.05 && ay < 0.05) return 'random';
+  if (ax > ay) return smoothX > 0 ? 'left' : 'right';
+  return smoothY > 0 ? 'top' : 'bottom';
+}
+
+function loop() {
+  smoothX += (gx - smoothX) * 0.15;
+  smoothY += (gy - smoothY) * 0.15;
+
+  for (var i = 0; i < blobList.length; i++) {
+    var b = blobList[i];
+    if (isPlaying) {
+      b.x += smoothX * b.speed * 3;
+      b.y += smoothY * b.speed * 3;
+      b.x += b.dx;
+      b.y += b.dy;
+      b.dx += rand(-0.02, 0.02);
+      b.dy += rand(-0.02, 0.02);
+      b.dx *= 0.99;
+      b.dy *= 0.99;
+    }
+    // Fade in new blobs smoothly
+    if (b.fade < 1) { b.fade = Math.min(1, b.fade + 0.01); }
+    b.el.style.opacity = (0.7 * b.fade).toFixed(2);
+    b.el.style.transform = 'translate3d(' + b.x + 'px,' + b.y + 'px,0) scale(' + b.s + ')';
+
+    var margin = b.size * 1.5;
+    if (b.x < -margin || b.x > W + margin || b.y < -margin || b.y > H + margin) {
+      resetBlob(b, spawnEdge());
+    }
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+function setNoise(type) {
+  currentPalette = type;
+  document.body.style.background = palettes[type].bg;
+  for (var i = 0; i < blobList.length; i++) {
+    blobList[i].el.style.background = palettes[type].blobs[blobList[i].ci];
   }
 }
 setNoise('white');
-document.body.classList.add('paused');
 
 function handleMessage(msg) {
   var data = JSON.parse(msg);
   if (data.noise) setNoise(data.noise);
-  if (data.playing !== undefined) setPlaying(data.playing);
+  if (data.playing !== undefined) isPlaying = data.playing;
+  if (data.gx !== undefined) { gx = data.gx; gy = data.gy; }
 }
 document.addEventListener('message', function(e) { handleMessage(e.data); });
 window.addEventListener('message', function(e) { handleMessage(e.data); });
@@ -482,6 +534,10 @@ function handleMessage(msg) {
     getReverbBuffer();
   }
 
+  if (data.action === 'setType') {
+    currentType = data.type;
+  }
+
   if (data.action === 'play') {
     if (!ctx) {
       ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -723,10 +779,15 @@ export default function App() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
-  // Shake to randomize
+  // Shake to randomize + gyro parallax
   useEffect(() => {
-    Accelerometer.setUpdateInterval(150);
+    Accelerometer.setUpdateInterval(50);
     const sub = Accelerometer.addListener(({ x, y, z }) => {
+      // Send gravity data to bg WebView for blob drift
+      // expo-sensors: x/y/z in g-force. Phone upright: x≈0, y≈-1, z≈0
+      // x = left/right tilt (works directly), -y = vertical gravity (~1 when upright = fall down)
+      bgRef.current?.postMessage(JSON.stringify({ gx: x, gy: -y }));
+
       const mag = Math.sqrt(x * x + y * y + z * z);
       const now = Date.now();
       if (mag > 2.5 && now - lastShake.current > 1500) {
@@ -744,6 +805,7 @@ export default function App() {
 
         if (!playingRef.current) {
           updatePlaying(true);
+          send({ action: "setType", type: randType });
           send({ action: "play" });
         }
 
@@ -769,14 +831,14 @@ export default function App() {
         singleTapTimer.current = null;
         const next = !playingRef.current;
         updatePlaying(next);
-        send({ action: next ? "play" : "stop" });
         if (next) {
-          // Sync restored state to the new audio chain
-          if (noiseTypeRef.current !== "white") {
-            send({ action: "crossfade", type: noiseTypeRef.current });
-          }
+          // Set the correct noise type BEFORE play so it builds the right chain
+          send({ action: "setType", type: noiseTypeRef.current });
+          send({ action: "play" });
           send({ action: "filter", value: filterRef.current });
           send({ action: "reverb", value: reverbRef.current });
+        } else {
+          send({ action: "stop" });
         }
         if (tutorialStepRef.current === "tap" && next) {
           advanceTutorial("tap");
