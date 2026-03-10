@@ -31,6 +31,95 @@ const NOISE_ORDER: NoiseType[] = ["white", "pink", "brown"];
 
 const CROSSFADE_MS = 1500;
 
+// ─── Animated Gradient Background ──────────────────────────────────
+const BG_GRADIENT_HTML = `
+<!DOCTYPE html><html><head>
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<style>
+*{margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden}
+body{background:rgb(245,245,245);transition:background 1.5s ease}
+.blob{
+  position:fixed;
+  border-radius:50%;
+  filter:blur(90px);
+  opacity:0.7;
+  transition:background 1.5s ease;
+  will-change:transform;
+}
+.b1{width:90vw;height:90vw;top:-20%;left:-25%;animation:drift1 14s ease-in-out infinite}
+.b2{width:80vw;height:80vw;bottom:-15%;right:-20%;animation:drift2 18s ease-in-out infinite}
+.b3{width:70vw;height:70vw;top:30%;left:40%;animation:drift3 16s ease-in-out infinite}
+.b4{width:60vw;height:60vw;top:10%;right:10%;animation:drift4 20s ease-in-out infinite}
+.paused .blob{animation-play-state:paused}
+@keyframes drift1{
+  0%,100%{transform:translate(0,0) scale(1)}
+  33%{transform:translate(30vw,30vh) scale(1.2)}
+  66%{transform:translate(-10vw,50vh) scale(0.9)}
+}
+@keyframes drift2{
+  0%,100%{transform:translate(0,0) scale(1)}
+  33%{transform:translate(-35vw,-25vh) scale(1.15)}
+  66%{transform:translate(20vw,-40vh) scale(1.1)}
+}
+@keyframes drift3{
+  0%,100%{transform:translate(0,0) scale(1)}
+  33%{transform:translate(-30vw,20vh) scale(1.2)}
+  66%{transform:translate(25vw,-30vh) scale(0.85)}
+}
+@keyframes drift4{
+  0%,100%{transform:translate(0,0) scale(1)}
+  33%{transform:translate(20vw,35vh) scale(0.9)}
+  66%{transform:translate(-30vw,-20vh) scale(1.15)}
+}
+</style></head><body>
+<div class="blob b1"></div>
+<div class="blob b2"></div>
+<div class="blob b3"></div>
+<div class="blob b4"></div>
+<script>
+var palettes = {
+  white: {
+    bg: 'rgb(242,242,242)',
+    blobs: ['rgb(175,175,180)','rgb(190,190,195)','rgb(165,165,172)','rgb(185,185,190)']
+  },
+  pink: {
+    bg: 'rgb(240,195,208)',
+    blobs: ['rgb(220,140,170)','rgb(250,160,190)','rgb(200,130,165)','rgb(235,170,200)']
+  },
+  brown: {
+    bg: 'rgb(135,100,18)',
+    blobs: ['rgb(180,135,30)','rgb(100,70,8)','rgb(190,145,40)','rgb(85,60,5)']
+  }
+};
+var blobs = document.querySelectorAll('.blob');
+function setNoise(type) {
+  var p = palettes[type];
+  document.body.style.background = p.bg;
+  for (var i = 0; i < blobs.length; i++) {
+    blobs[i].style.background = p.blobs[i];
+  }
+}
+function setPlaying(playing) {
+  if (playing) {
+    document.body.classList.remove('paused');
+  } else {
+    document.body.classList.add('paused');
+  }
+}
+setNoise('white');
+document.body.classList.add('paused');
+
+function handleMessage(msg) {
+  var data = JSON.parse(msg);
+  if (data.noise) setNoise(data.noise);
+  if (data.playing !== undefined) setPlaying(data.playing);
+}
+document.addEventListener('message', function(e) { handleMessage(e.data); });
+window.addEventListener('message', function(e) { handleMessage(e.data); });
+</script></body></html>
+`;
+
 // ─── Soft Orb (GPU-rendered radial gradient) ───────────────────────
 const ORB_SIZE = 220;
 
@@ -465,6 +554,7 @@ window.addEventListener('message', function(e) { handleMessage(e.data); });
 // ─── Main App ──────────────────────────────────────────────────────
 export default function App() {
   const webRef = useRef<WebView>(null);
+  const bgRef = useRef<WebView>(null);
   const [noiseType, setNoiseType] = useState<NoiseType>("white");
   const [isPlaying, setIsPlaying] = useState(false);
   const [filterVal, setFilterVal] = useState(1.0);
@@ -600,6 +690,7 @@ export default function App() {
     playingRef.current = next;
     setIsPlaying(next);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    bgRef.current?.postMessage(JSON.stringify({ playing: next }));
 
     // Silent track keeps iOS audio session alive in background
     if (silentSound.current) {
@@ -628,6 +719,7 @@ export default function App() {
     setNoiseType(next);
     animateBgTo(next);
     send({ action: "crossfade", type: next });
+    bgRef.current?.postMessage(JSON.stringify({ noise: next }));
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
@@ -759,8 +851,22 @@ export default function App() {
     <View style={styles.container} {...panResponder.panHandlers}>
       <StatusBar style={noiseType === "brown" || filterVal < 0.4 ? "light" : "dark"} />
 
-      {/* Background */}
-      <Animated.View style={[styles.bgLayer, { backgroundColor: bgColor }]} />
+      {/* Animated gradient background */}
+      <View style={styles.bgLayer}>
+        <WebView
+          ref={bgRef}
+          source={{ html: BG_GRADIENT_HTML }}
+          style={{ flex: 1 }}
+          scrollEnabled={false}
+          pointerEvents="none"
+          onLoad={() => {
+            bgRef.current?.postMessage(JSON.stringify({
+              noise: noiseTypeRef.current,
+              playing: playingRef.current,
+            }));
+          }}
+        />
+      </View>
 
       {/* Filter darkening */}
       <View
